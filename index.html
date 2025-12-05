@@ -3,22 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>星尘交互 - 最终版本</title>
+    <title>星尘交互 - 最终修复版</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; display: flex; align-items: center; justify-content: center; height: 100vh; color: white; font-family: sans-serif;}
         #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        /* 隐藏视频，通过脚本处理 */
         #input-video { display: none; }
         
         /* 加载与UI */
         #ui { position: absolute; z-index: 10; text-align: center; pointer-events: none; }
         #status { font-size: 16px; color: #00ffaa; margin-bottom: 10px; text-shadow: 0 0 5px #00ffaa; }
-        #info-box { 
-            position: absolute; bottom: 20px; right: 20px; 
-            padding: 10px; background: rgba(0,0,0,0.5); 
-            border: 1px solid rgba(0, 170, 255, 0.5); font-size: 12px; 
-            color: #00aaff; text-align: left; pointer-events: none; 
-            line-height: 1.6;
-        }
+        #loading-bar { width: 200px; height: 4px; background: #333; margin: 0 auto; border-radius: 2px; overflow: hidden; display: none; }
+        #loading-progress { width: 0%; height: 100%; background: #00aaff; transition: width 0.3s; }
         
         /* 启动按钮 */
         #start-btn { 
@@ -36,43 +32,29 @@
     
     <div id="ui">
         <div id="status">正在建立连接...</div>
+        <div id="loading-bar"><div id="loading-progress"></div></div>
         <button id="start-btn">开启星尘</button>
     </div>
-
-    <div id="info-box">
-        <div>状态: <span id="current-state">聚拢</span></div>
-        <div>形态: <span id="current-shape">球体</span></div>
-        <div>交互: ✋扩散 / ✊聚拢 / 👋左右挥手切换形态</div>
-    </div>
-
 
     <video id="input-video" playsinline webkit-playsinline></video>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js" crossorigin="anonymous"></script>
 
     <script>
         const statusEl = document.getElementById('status');
         const startBtn = document.getElementById('start-btn');
+        const loadBar = document.getElementById('loading-bar');
+        const loadProgress = document.getElementById('loading-progress');
         const videoElement = document.getElementById('input-video');
-        const stateEl = document.getElementById('current-state');
-        const shapeEl = document.getElementById('current-shape');
 
-        // --- 全局配置与状态 ---
-        const mpVersion = '0.4.1646424915';
-        const particleCount = 10000;
-        let isExploded = false; // 是否扩散
-        let progress = 0; // 0-1 扩散进度
-        let shapeProgress = 0; // 0-1 形态切换进度
-        let currentShape = 'sphere'; // 当前形态
-        let lastHandX = 0; // 用于滑动检测
-        let lastGestureTime = 0; // 用于滑动冷却
-
-        // --- 1. Three.js 视觉系统 ---
+        // --- 第一部分：Three.js 视觉效果 (粒子星球) ---
         const scene = new THREE.Scene();
-        scene.fog = new THREE.FogExp2(0x000000, 0.02);
+        scene.fog = new THREE.FogExp2(0x000000, 0.02); // 增加雾气
         
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         camera.position.z = 40;
@@ -81,220 +63,104 @@
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.getElementById('canvas-container').appendChild(renderer.domElement);
 
-        // 粒子数据
+        // 创建粒子
+        const particleCount = 8000;
         const geometry = new THREE.BufferGeometry();
-        const positions = new Float32Array(particleCount * 3);
-        const basePositions = []; // 目标形态 A: 球体
-        const cubePositions = []; // 目标形态 B: 立方体
+        const positions = [];
+        const basePositions = [];
         const colors = [];
         const colorBase = new THREE.Color(0x0088ff);
         const colorActive = new THREE.Color(0xff0055);
-        const sizes = []; // 用于着色器的探针大小
-        
-        const rSphere = 15;
-        const rCube = 25;
 
         for(let i=0; i<particleCount; i++) {
-            // 球体数据 (Base)
+            // 球体分布
             const phi = Math.acos(-1 + (2 * i) / particleCount);
             const theta = Math.sqrt(particleCount * Math.PI) * phi;
-            basePositions.push(
-                rSphere * Math.cos(theta) * Math.sin(phi),
-                rSphere * Math.sin(theta) * Math.sin(phi),
-                rSphere * Math.cos(phi)
-            );
+            const r = 15;
             
-            // 立方体数据 (Target)
-            cubePositions.push(
-                (Math.random() - 0.5) * rCube,
-                (Math.random() - 0.5) * rCube,
-                (Math.random() - 0.5) * rCube
-            );
-
-            // 初始化位置
-            positions[i*3] = basePositions[i*3];
-            positions[i*3+1] = basePositions[i*3+1];
-            positions[i*3+2] = basePositions[i*3+2];
+            const x = r * Math.cos(theta) * Math.sin(phi);
+            const y = r * Math.sin(theta) * Math.sin(phi);
+            const z = r * Math.cos(phi);
             
+            positions.push(x, y, z);
+            basePositions.push(x, y, z); // 记住原始位置
             colors.push(colorBase.r, colorBase.g, colorBase.b);
-            sizes.push(Math.random() * 1.5 + 0.5);
         }
         
-        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
         geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-        geometry.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1)); // 传递给着色器
 
-        // 自定义着色器材质 (实现探针效果)
-        const particleUniforms = {
-            uTime: { value: 0 },
-            uBaseColor: { value: colorBase },
-            uActiveColor: { value: colorActive },
-            uProgress: { value: 0.0 } // 扩散进度
-        };
-
-        const shaderMaterial = new THREE.ShaderMaterial({
-            uniforms: particleUniforms,
-            vertexShader: `
-                uniform float uTime;
-                uniform float uProgress;
-                attribute float size;
-                attribute vec3 color;
-                varying vec3 vColor;
-                varying float vOpacity;
-                
-                void main() {
-                    vColor = color;
-                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-                    
-                    // 粒子大小随距离变化，并根据手势扩散大小
-                    gl_PointSize = size * (200.0 / -mvPosition.z) * (1.0 + uProgress * 2.0);
-                    
-                    gl_Position = projectionMatrix * mvPosition;
-                    vOpacity = 1.0;
-                }
-            `,
-            fragmentShader: `
-                uniform vec3 uActiveColor;
-                uniform vec3 uBaseColor;
-                uniform float uProgress;
-                varying vec3 vColor;
-                
-                void main() {
-                    vec2 xy = gl_PointCoord.xy - vec2(0.5);
-                    float r = length(xy);
-                    if (r > 0.5) discard;
-                    
-                    // 颜色插值：根据扩散进度混合颜色
-                    vec3 finalColor = mix(vColor, uActiveColor, uProgress);
-                    
-                    // 边缘发光和中心亮度
-                    float strength = smoothstep(0.5, 0.4, r) * (0.5 + uProgress * 0.5);
-                    
-                    gl_FragColor = vec4(finalColor * strength, strength);
-                }
-            `,
+        const material = new THREE.PointsMaterial({ 
+            size: 0.3, 
+            vertexColors: true,
+            blending: THREE.AdditiveBlending,
             transparent: true,
-            depthWrite: false,
-            blending: THREE.AdditiveBlending
+            opacity: 0.8
         });
         
-        const particles = new THREE.Points(geometry, shaderMaterial);
+        const particles = new THREE.Points(geometry, material);
         scene.add(particles);
 
+        // 动画变量
+        let isExploded = false;
+        let progress = 0; // 0 = 聚拢, 1 = 扩散
 
-        // --- 2. Web Audio 系统 (音效) ---
-        let audioCtx;
-        let oscillator;
-        let gainNode;
-
-        function initAudio() {
-            try {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                if(audioCtx.state === 'suspended') audioCtx.resume();
-                
-                oscillator = audioCtx.createOscillator();
-                gainNode = audioCtx.createGain();
-                
-                oscillator.type = 'sine'; // 科幻风
-                gainNode.gain.setValueAtTime(0, audioCtx.currentTime); // 初始静音
-                
-                oscillator.connect(gainNode);
-                gainNode.connect(audioCtx.destination);
-                oscillator.start();
-            } catch (e) {
-                console.warn("Audio Context initialization failed:", e);
-            }
-        }
-
-        function updateAudio(currentProgress) {
-            if (!oscillator || !audioCtx) return;
-            
-            // 频率 (音高) 随扩散程度变化：聚拢(200Hz) -> 扩散(500Hz)
-            const targetFreq = 200 + currentProgress * 300;
-            // 音量随扩散程度变化
-            const targetGain = 0.03 + currentProgress * 0.07; 
-            
-            oscillator.frequency.setTargetAtTime(targetFreq, audioCtx.currentTime, 0.05);
-            gainNode.gain.setTargetAtTime(targetGain, audioCtx.currentTime, 0.05);
-        }
-        
-        function playSwipeSound() {
-            if (!audioCtx) return;
-            const osc = audioCtx.createOscillator();
-            const gn = audioCtx.createGain();
-            osc.type = 'sawtooth';
-            osc.frequency.setValueAtTime(350, audioCtx.currentTime);
-            osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.2);
-            gn.gain.setValueAtTime(0.2, audioCtx.currentTime);
-            gn.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
-            
-            osc.connect(gn);
-            gn.connect(audioCtx.destination);
-            osc.start();
-            osc.stop(audioCtx.currentTime + 0.3);
-        }
-
-
-        // --- 3. 动画循环与形态更新 ---
         function animate() {
             requestAnimationFrame(animate);
             
-            const targetExplode = isExploded ? 1 : 0;
-            progress += (targetExplode - progress) * 0.1; // 扩散进度 Lerp
+            // 状态平滑过渡
+            const target = isExploded ? 1 : 0;
+            progress += (target - progress) * 0.1;
             
-            // 形态切换进度 Lerp
-            const targetShape = currentShape === 'sphere' ? 0 : 1;
-            shapeProgress += (targetShape - shapeProgress) * 0.1;
-
             const posAttr = geometry.attributes.position;
+            const colAttr = geometry.attributes.color;
             const t = Date.now() * 0.001;
-            
-            // 更新着色器 Uniforms
-            particleUniforms.uTime.value = t;
-            particleUniforms.uProgress.value = progress;
 
             for(let i=0; i<particleCount; i++) {
                 const ix = i*3;
+                const bx = basePositions[ix], by = basePositions[ix+1], bz = basePositions[ix+2];
                 
-                // 1. 形态插值：从球体 (basePositions) 渐变到立方体 (cubePositions)
-                const sx = basePositions[ix], sy = basePositions[ix+1], sz = basePositions[ix+2];
-                const cx = cubePositions[ix], cy = cubePositions[ix+1], cz = cubePositions[ix+2];
+                // 基础自转
+                const cosT = Math.cos(t * 0.1);
+                const sinT = Math.sin(t * 0.1);
                 
-                // shapeProgress (0 -> 1) 控制混合
-                const tx = sx + (cx - sx) * shapeProgress;
-                const ty = sy + (cy - sy) * shapeProgress;
-                const tz = sz + (cz - sz) * shapeProgress;
-
-                // 2. 扩散/聚拢计算：在目标形态上进行放大/缩小
-                const explodeScale = 1 + (progress * 1.5); // 扩散最大放大 1.5 倍
+                // 扩散计算：向外推 + 噪点
+                const noise = Math.sin(bx * 0.1 + t) * Math.cos(by * 0.1 + t);
+                const explodeScale = 1 + (progress * 3.0) + (progress * noise * 0.5);
                 
-                posAttr.array[ix] = tx * explodeScale;
-                posAttr.array[ix+1] = ty * explodeScale;
-                posAttr.array[ix+2] = tz * explodeScale;
+                posAttr.array[ix] = bx * explodeScale;
+                posAttr.array[ix+1] = by * explodeScale;
+                posAttr.array[ix+2] = bz * explodeScale;
+                
+                // 颜色变化
+                const r = colorBase.r + (colorActive.r - colorBase.r) * progress;
+                const g = colorBase.g + (colorActive.g - colorBase.g) * progress;
+                const b = colorBase.b + (colorActive.b - colorBase.b) * progress;
+                
+                colAttr.array[ix] = r;
+                colAttr.array[ix+1] = g;
+                colAttr.array[ix+2] = b;
             }
             
             posAttr.needsUpdate = true;
+            colAttr.needsUpdate = true;
+            particles.rotation.y = t * 0.1 * (1 - progress * 0.8); // 扩散时减慢旋转
             
-            // 自动旋转：聚拢时转得快，扩散时慢
-            particles.rotation.y = t * 0.1 * (1 - progress * 0.8);
-            
-            // 更新音效
-            updateAudio(progress);
-            
-            // 更新 UI
-            stateEl.innerText = progress > 0.8 ? '扩散' : (progress < 0.2 ? '聚拢' : '过渡中');
-            shapeEl.innerText = shapeProgress > 0.5 ? '立方体' : '球体';
-
             renderer.render(scene, camera);
         }
         animate();
 
+        // --- 第二部分：MediaPipe 核心逻辑 (修复版) ---
+        
+        statusEl.innerText = "正在下载 AI 模型...";
+        loadBar.style.display = 'block';
+        loadProgress.style.width = '30%';
 
-        // --- 4. MediaPipe 手势与交互逻辑 ---
-
+        // 关键修复：强制版本一致性，避免 CDN 混用导致的静默失败
+        const mpVersion = '0.4.1646424915';
         const hands = new Hands({
             locateFile: (file) => {
-                // 关键：确保模型路径正确，使用锁定版本
+                // 强制所有依赖文件 (wasm, tflite) 都使用完全相同的版本 URL
                 return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${mpVersion}/${file}`;
             }
         });
@@ -306,66 +172,43 @@
             minTrackingConfidence: 0.5
         });
 
-        // 手势结果处理
+        // 关键逻辑：一旦 Results 回调函数被触发，哪怕是空的，也说明模型加载成功了
+        let isModelLoaded = false;
+        
         hands.onResults((results) => {
-            if(!videoElement.style.display) {
-                // 模型加载成功，但只在启动后才执行
+            if(!isModelLoaded) {
+                isModelLoaded = true;
+                statusEl.innerText = "系统就绪";
+                loadBar.style.display = 'none';
+                // 这里我们不需要手动显示按钮，视频流接通后自然开始交互
             }
 
             if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                // 识别到手
+                statusEl.innerText = "检测到信号";
                 const landmarks = results.multiHandLandmarks[0];
+                
+                // 计算张开程度：指尖到手腕的距离
                 const wrist = landmarks[0];
                 const middleTip = landmarks[12];
-                const indexRoot = landmarks[5]; // 食指根部，用于滑动追踪
-
-                // 1. 扩散/聚拢识别 (张开/握拳)
                 const distance = Math.sqrt(
                     Math.pow(middleTip.x - wrist.x, 2) + 
                     Math.pow(middleTip.y - wrist.y, 2)
                 );
                 
-                if (distance > 0.25) { // 阈值
-                    isExploded = true;
+                // 阈值判断
+                if (distance > 0.25) {
+                    isExploded = true; // 张开
                 } else {
-                    isExploded = false;
+                    isExploded = false; // 握拳
                 }
-
-                // 2. 形态切换识别 (滑动)
-                const currX = indexRoot.x;
-                const now = Date.now();
-                const swipeThreshold = 0.15; // 滑动距离阈值 (标准化坐标 0-1)
-                const swipeCooldown = 1500; // 冷却时间 1.5 秒
-
-                if (lastHandX !== 0 && (now - lastGestureTime > swipeCooldown)) {
-                    const deltaX = currX - lastHandX;
-                    
-                    if (Math.abs(deltaX) > swipeThreshold) {
-                        // 识别到有效滑动
-                        currentShape = currentShape === 'sphere' ? 'cube' : 'sphere';
-                        playSwipeSound();
-                        lastGestureTime = now;
-                    }
-                }
-                lastHandX = currX; // 更新上一帧位置
-                statusEl.innerText = "正在分析..."; // 确保状态更新
-                
             } else {
-                // 未检测到手部，恢复聚拢
-                isExploded = false;
-                lastHandX = 0;
                 statusEl.innerText = "未检测到手部";
+                isExploded = false;
             }
         });
 
-
-        // --- 5. 启动流程 ---
-
-        statusEl.innerText = "AI 模型加载中...";
-        hands.onLoaded = () => {
-            statusEl.innerText = "模型加载完毕，请点击启动";
-            startBtn.style.display = 'inline-block';
-        };
-
+        // 启动逻辑
         const cameraUtils = new Camera(videoElement, {
             onFrame: async () => {
                 await hands.send({image: videoElement});
@@ -374,17 +217,22 @@
             height: 480
         });
 
+        // 等待用户点击，解决浏览器自动播放策略
+        statusEl.innerText = "点击按钮启动";
+        loadProgress.style.width = '100%';
+        startBtn.style.display = 'inline-block';
+
         startBtn.addEventListener('click', () => {
             startBtn.style.display = 'none';
+            loadBar.style.display = 'block';
             statusEl.innerText = "正在初始化摄像头...";
             
-            // 启动音频和摄像头
-            initAudio(); 
             cameraUtils.start()
                 .then(() => {
-                    statusEl.innerText = "AI 识别中...";
+                    statusEl.innerText = "正在分析...";
                 })
                 .catch(err => {
+                    console.error(err);
                     statusEl.innerText = "摄像头启动失败 (请允许权限)";
                     alert("请允许摄像头权限！");
                 });
